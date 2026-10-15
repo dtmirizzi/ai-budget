@@ -729,10 +729,20 @@ class SessionDetail(Screen):
         self.dismiss()
 
 
+class BudgetCap(Widget):
+    """Top-right budget cap indicator: [$100.00]"""
+
+    budget: float = reactive(100.0)
+
+    def render(self) -> str:
+        return f"[bold]cap: [/$]${self.budget:,.2f}[/]"
+
+
 class BudgetDashboard(App):
     """Htop-style budget dashboard for pi & Claude Code."""
 
     CSS = """
+    BudgetCap       { dock: top; height: 1; content-align: right middle; margin: 0 2 0 0; }
     BudgetBar       { height: 1; margin: 0 1; }
     AgentSummary    { height: 1; margin: 0 1; }
     RefreshStatus   { height: 1; margin: 0 1; }
@@ -774,6 +784,7 @@ class BudgetDashboard(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
+        yield BudgetCap()
         yield BudgetBar()
         yield AgentSummary()
         yield RefreshStatus()
@@ -842,6 +853,9 @@ class BudgetDashboard(App):
         bb = self.query_one(BudgetBar)
         bb.spent = total_spent
         bb.budget = budget_amount
+
+        # Budget cap (top-right)
+        self.query_one(BudgetCap).budget = budget_amount
 
         # ── Agent summary ────────────────────────────────────────────────
         pi_cost = sum(s.total_cost for s in self.sessions if s.agent == "pi")
