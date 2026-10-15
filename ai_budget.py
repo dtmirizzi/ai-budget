@@ -770,7 +770,6 @@ class BudgetDashboard(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield BudgetCap()
         yield BudgetBar()
         yield AgentSummary()
         yield RefreshStatus()
