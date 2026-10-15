@@ -2,17 +2,20 @@
 
 A beautiful `htop`-style terminal dashboard for tracking API budgets across **pi** and **Claude Code**.
 
-Shows per-agent spend, top sessions by cost, and fastest-growing sessions — all from your local session data. Auto-refreshes, config-driven, and incremental (only re-parses files that changed).
-
-<img width="912" alt="ai-budget dashboard" src="https://github.com/user-attachments/assets/placeholder">
+Rainbow budget bar, sparkline trend, sortable session tables, and one-key session inspection — all from local data with incremental refreshes.
 
 ## Features
 
-- **Budget gauge** — colored progress bar with spent / total
-- **Per-agent breakdown** — pi vs Claude Code totals
-- **Top sessions table** — sortable by cost (`1`), tokens (`2`), or growth rate (`3`)
-- **Fastest growing** — sessions active in the last 2 hours, ranked by $/hr
+- **Rainbow budget gauge** — gradient bar (green → yellow → orange → pink → purple)
+- **Sparkline** — real-time budget growth over time using Unicode block chars (▁▃▅▇█)
+- **Fastest growing** — sessions active in the last 2 hours, ranked by $/hr *(default view)*
+- **Top sessions** — sortable by cost (`1`), tokens (`2`), or growth rate (`3`)
+- **Toggle views** — `Tab` swaps fastest ↔ top; Enter inspects any session
+- **Per-agent breakdown** — pi vs Claude Code totals with session counts
+- **Weekly budgets** — configurable reset day (Monday, Friday, etc.)
 - **Incremental parsing** — only re-reads files whose mtime changed; parallel I/O via thread pool
+- **Session detail modal** — press Enter on any row to see model, cost, tokens, file path
+- **Smart titles** — extracts first user message for pi sessions; uses Claude Code metadata titles
 - **Config-driven** — budget amount, reset cadence, window size, refresh interval
 - **One-shot mode** — `ai-budget --summary` prints a quick report
 
@@ -21,13 +24,7 @@ Shows per-agent spend, top sessions by cost, and fastest-growing sessions — al
 ### With uv (recommended)
 
 ```bash
-# Install globally from GitHub
 uv tool install git+https://github.com/dtmirizzi/ai-budget.git
-
-# Or install from a local clone
-git clone https://github.com/dtmirizzi/ai-budget.git
-cd ai-budget
-uv tool install .
 ```
 
 ### With pip
@@ -53,13 +50,8 @@ uv run ai-budget
 ## Usage
 
 ```bash
-# Launch the TUI dashboard
-ai-budget
-
-# One-shot summary (no TUI)
-ai-budget --summary
-
-# Custom config path
+ai-budget              # launch the TUI dashboard
+ai-budget --summary    # one-shot report
 ai-budget --config ~/my-config.json
 ```
 
@@ -69,6 +61,9 @@ ai-budget --config ~/my-config.json
 |-----|--------|
 | `q` | Quit |
 | `r` | Force refresh |
+| `Tab` | Toggle fastest ↔ top view |
+| `Enter` | Inspect highlighted session (detail modal) |
+| `Esc` | Close detail modal |
 | `s` | Reverse sort order |
 | `1` | Sort by cost |
 | `2` | Sort by tokens |
@@ -76,23 +71,19 @@ ai-budget --config ~/my-config.json
 
 ## Configuration
 
-Default config is created at `~/.config/ai-budget/config.json` on first run.
+Default config at `~/.config/ai-budget/config.json`.
+
+### Weekly budget (reset every Monday)
 
 ```json
 {
   "budget": {
     "amount": 100.0,
-    "currency": "USD",
-    "reset": "monthly"
+    "reset": "weekly"
   },
   "window": {
-    "type": "rolling",
-    "days": 30
-  },
-  "paths": {
-    "pi_sessions": "~/.pi/agent/sessions",
-    "claude_code_sessions": "~/Library/Application Support/Claude/local-agent-mode-sessions",
-    "claude_code_sessions_alt": "~/Library/Application Support/Claude/claude-code-sessions"
+    "type": "weekly",
+    "reset_day": "monday"
   },
   "refresh_interval_seconds": 60,
   "display": {
@@ -101,22 +92,39 @@ Default config is created at `~/.config/ai-budget/config.json` on first run.
 }
 ```
 
+### Monthly rolling window
+
+```json
+{
+  "budget": {
+    "amount": 500.0,
+    "reset": "monthly"
+  },
+  "window": {
+    "type": "rolling",
+    "days": 30
+  },
+  "refresh_interval_seconds": 60
+}
+```
+
 | Field | Description |
 |-------|-------------|
 | `budget.amount` | Total budget in USD |
-| `budget.reset` | Reset cadence: `"daily"`, `"weekly"`, `"monthly"` |
-| `window.type` | `"rolling"` (last N days) or `"monthly"` / `"weekly"` (calendar) |
+| `budget.reset` | `"daily"`, `"weekly"`, or `"monthly"` |
+| `window.type` | `"rolling"`, `"weekly"`, or `"monthly"` |
+| `window.reset_day` | Day of week for weekly reset: `"monday"` through `"sunday"` |
 | `window.days` | Days to include (for `rolling` type) |
 | `refresh_interval_seconds` | Auto-refresh interval (default 60) |
 
 ## Data sources
 
-**Pi** — reads `~/.pi/agent/sessions/<workspace>/*.jsonl`, extracts `message.usage.cost.total` and `message.usage.totalTokens` from each conversation entry.
+**Pi** — `~/.pi/agent/sessions/<workspace>/*.jsonl` — extracts cost, tokens, model, first user prompt as title.
 
-**Claude Code** — walks `~/Library/Application Support/Claude/local-agent-mode-sessions/` for `audit.jsonl` files, extracts `result.total_cost_usd` and matches sibling metadata JSONs for session titles, models, and timestamps.
+**Claude Code** — `~/Library/Application Support/Claude/local-agent-mode-sessions/` — parses `audit.jsonl` for `total_cost_usd`, matches sibling metadata JSONs for session titles, models, and timestamps.
 
 ## How it works
 
-On first launch, every session file is parsed (parallelized across 8 threads). On subsequent refreshes, only files whose **mtime changed** are re-parsed — the rest come from an in-memory cache. The refresh interval defaults to 60 seconds (configurable).
+On first launch, every session file is parsed in parallel across 8 threads. On subsequent refreshes, only files whose **mtime changed** are re-parsed — the rest come from an in-memory cache. A ring buffer tracks total spend over time for the sparkline.
 
-The dashboard filters sessions to the configured **budget window** (rolling or calendar) and renders everything via [Textual](https://textual.textualize.io/), the same framework powering tools like `posting` and `toolong`.
+Built with [Textual](https://textual.textualize.io/).

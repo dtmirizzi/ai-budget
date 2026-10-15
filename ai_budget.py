@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -18,7 +19,7 @@ from pathlib import Path
 
 # ── textual imports ──────────────────────────────────────────────────────────
 try:
-    from textual.app import App, ComposeResult
+    from textual.screen import Screen
     from textual.binding import Binding
     from textual.reactive import reactive
     from textual.widgets import DataTable, Footer, Header, Label, Static
@@ -69,6 +70,7 @@ class SessionData:
     created_at: datetime | None = None
     last_activity_at: datetime | None = None
     workspace: str = ""
+    source_path: str = ""  # filesystem path to the session file
 
     @property
     def cost_per_hour(self) -> float:
@@ -106,7 +108,7 @@ def _parse_jsonl(path: Path) -> list[dict]:
     return entries
 
 
-def _extract_pi(entries: list[dict]) -> SessionData | None:
+def _extract_pi(entries: list[dict], source_path: str = "") -> SessionData | None:
     """Parse a pi session JSONL into a SessionData (called from thread pool)."""
     session_id = ""
     cwd = ""
@@ -115,6 +117,7 @@ def _extract_pi(entries: list[dict]) -> SessionData | None:
     model = ""
     total_cost = 0.0
     total_tokens = 0
+    title = ""
 
     for entry in entries:
         t = entry.get("type")
@@ -130,7 +133,15 @@ def _extract_pi(entries: list[dict]) -> SessionData | None:
         elif t == "model_change":
             model = _strip(entry.get("modelId", ""))
         elif t == "message":
-            usage = entry.get("message", {}).get("usage", {})
+            msg = entry.get("message", {})
+            # Capture first user message as title
+            if not title and msg.get("role") == "user":
+                content = msg.get("content", [])
+                if content and isinstance(content, list):
+                    first_text = content[0].get("text", "")
+                    if first_text:
+                        title = _strip(first_text)[:120].strip()
+            usage = msg.get("usage", {})
             if "cost" in usage:
                 total_cost += usage["cost"].get("total", 0.0)
             total_tokens += usage.get("totalTokens", 0)
@@ -152,13 +163,14 @@ def _extract_pi(entries: list[dict]) -> SessionData | None:
         return None
 
     return SessionData(
-        session_id=session_id, agent="pi", cwd=cwd, model=model,
+        session_id=session_id, agent="pi", title=title, cwd=cwd, model=model,
         total_cost=total_cost, total_tokens=total_tokens,
         created_at=created_at, last_activity_at=last_activity,
+        source_path=source_path,
     )
 
 
-def _extract_claude(entries: list[dict], meta: dict, is_sub: bool = False) -> SessionData | None:
+def _extract_claude(entries: list[dict], meta: dict, source_path: str = "", is_sub: bool = False) -> SessionData | None:
     """Parse Claude Code audit entries into a SessionData (called from thread pool)."""
     total_cost = 0.0
     total_tokens = 0
@@ -229,6 +241,7 @@ def _extract_claude(entries: list[dict], meta: dict, is_sub: bool = False) -> Se
         session_id=session_id, agent="claude-code", title=display_title,
         cwd=cwd, model=model, total_cost=total_cost, total_tokens=total_tokens,
         created_at=created_at, last_activity_at=last_activity,
+        source_path=source_path,
     )
 
 
@@ -312,6 +325,7 @@ class SessionCache:
                 cwd=s.cwd, model=s.model, total_cost=s.total_cost,
                 total_tokens=s.total_tokens, created_at=s.created_at,
                 last_activity_at=s.last_activity_at, workspace=ws,
+                source_path=s.source_path or path,
             ))
 
         return results, scanned, parsed
@@ -427,6 +441,7 @@ class SessionCache:
                     cwd=s.cwd, model=s.model, total_cost=s.total_cost,
                     total_tokens=s.total_tokens, created_at=s.created_at,
                     last_activity_at=s.last_activity_at, workspace=s.workspace,
+                    source_path=s.source_path or key,
                 ))
 
         return results, scanned, parsed
@@ -463,14 +478,14 @@ def _parse_and_extract_pi(path: str) -> SessionData | None:
     entries = _parse_jsonl(Path(path))
     if not entries:
         return None
-    return _extract_pi(entries)
+    return _extract_pi(entries, source_path=path)
 
 
 def _parse_and_extract_cc(path: Path, meta: dict, is_sub: bool) -> SessionData | None:
     entries = _parse_jsonl(path)
     if not entries:
         return None
-    return _extract_claude(entries, meta, is_sub)
+    return _extract_claude(entries, meta, source_path=str(path), is_sub=is_sub)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -479,6 +494,17 @@ def _parse_and_extract_cc(path: Path, meta: dict, is_sub: bool) -> SessionData |
 
 def _expand(path: str) -> Path:
     return Path(os.path.expanduser(path))
+
+
+def _mix_hex(c0: str, c1: str, t: float) -> str:
+    """Linear interpolation between two #RRGGBB hex colors."""
+    t = max(0.0, min(1.0, t))
+    r0, g0, b0 = int(c0[1:3], 16), int(c0[3:5], 16), int(c0[5:7], 16)
+    r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
+    r = int(r0 + (r1 - r0) * t)
+    g = int(g0 + (g1 - g0) * t)
+    b = int(b0 + (b1 - b0) * t)
+    return f"#{r:02x}{g:02x}{b:02x}"
 
 
 def filter_by_window(sessions: list[SessionData], config: dict) -> list[SessionData]:
@@ -493,8 +519,14 @@ def filter_by_window(sessions: list[SessionData], config: dict) -> list[SessionD
         cutoff = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     elif window_type == "weekly":
         now = datetime.now(timezone.utc)
-        cutoff = now - timedelta(days=now.weekday())
-        cutoff = cutoff.replace(hour=0, minute=0, second=0, microsecond=0)
+        # Configurable reset day — default Monday (0)
+        day_names = {"monday": 0, "tuesday": 1, "wednesday": 2,
+                     "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
+        reset_day_name = window_config.get("reset_day", "monday").lower()
+        target_weekday = day_names.get(reset_day_name, 0)
+        days_since = (now.weekday() - target_weekday) % 7
+        cutoff = (now - timedelta(days=days_since)).replace(
+            hour=0, minute=0, second=0, microsecond=0)
     else:
         cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
 
@@ -512,21 +544,54 @@ class BudgetBar(Widget):
     spent: float = reactive(0.0)
     budget: float = reactive(100.0)
 
+    # ── rainbow gradient stops (hue-based rich colors) ──────────────────
+    _GRADIENT = [
+        (0.00, "#00ff87"),   # neon green
+        (0.20, "#60f050"),   # green
+        (0.40, "#f0e040"),   # yellow
+        (0.55, "#f0a020"),   # orange
+        (0.70, "#f06040"),   # red-orange
+        (0.85, "#f04080"),   # hot pink
+        (1.00, "#e020ff"),   # purple
+    ]
+
+    @staticmethod
+    def _interp_color(t: float) -> str:
+        """Interpolate through the gradient at position t (0..1)."""
+        stops = BudgetBar._GRADIENT
+        if t <= stops[0][0]:
+            return stops[0][1]
+        if t >= stops[-1][0]:
+            return stops[-1][1]
+        for i in range(len(stops) - 1):
+            t0, c0 = stops[i]
+            t1, c1 = stops[i + 1]
+            if t0 <= t <= t1:
+                frac = (t - t0) / (t1 - t0)
+                return _mix_hex(c0, c1, frac)
+        return stops[-1][1]
+
     def render(self) -> str:
         ratio = min(self.spent / self.budget, 1.0) if self.budget > 0 else 1.0
         width = max(self.size.width - 22, 10)
         filled = int(ratio * width)
-        empty = width - filled
+        rest = width - filled
 
-        if ratio > 0.9:
-            fc, ec = "[bold red]", "[dim red]"
-        elif ratio > 0.75:
-            fc, ec = "[bold yellow]", "[dim yellow]"
-        else:
-            fc, ec = "[bold green]", "[dim green]"
+        # Build filled portion character-by-character with gradient
+        bar = ""
+        for i in range(filled):
+            t = i / width if width > 0 else 0
+            color = self._interp_color(t)
+            bar += f"[{color}]█[/]"
+        # Empty zone — dim purple
+        bar += f"[#302040]{'░' * rest}[/]"
 
-        bar = f"{fc}{'█' * filled}{ec}{'░' * empty}[/]"
-        return f" Budget  {bar}  ${self.spent:,.2f} / ${self.budget:,.2f}"
+        spent_color = self._interp_color(ratio)
+        return (
+            f" Budget  {bar}  "
+            f"[{spent_color}]${self.spent:,.2f}[/]"
+            f" / ${self.budget:,.2f}"
+        )
 
 
 class AgentSummary(Widget):
@@ -561,6 +626,108 @@ class RefreshStatus(Widget):
         )
 
 
+class Sparkline(Widget):
+    """Mini budget-growth chart using Unicode block characters."""
+
+    _BLOCKS = " ▁▂▃▄▅▆▇█"  # 9 levels (0-8)
+    points: list[float] = []
+
+    def render(self) -> str:
+        pts = self.points
+        if len(pts) < 2:
+            return "[dim]  ⏳ collecting data…[/]"
+
+        mn, mx = min(pts), max(pts)
+        span = mx - mn
+        if span == 0:
+            span = 1
+
+        # Map each point to a block char (level 0–8)
+        chars = []
+        for v in pts:
+            level = int((v - mn) / span * 8)
+            chars.append(self._BLOCKS[min(level, 8)])
+
+        line = "".join(chars)
+
+        # Color the line with rainbow gradient
+        colored = ""
+        n = len(chars)
+        for i, ch in enumerate(chars):
+            color = BudgetBar._interp_color(i / max(n - 1, 1) * 0.7)
+            colored += f"[{color}]{ch}[/]"
+
+        return f"[dim]${mn:,.2f}[/] {colored} [dim]${mx:,.2f}[/]"
+
+
+class SessionDetail(Screen):
+    """Modal showing session metadata and first/last messages."""
+
+    CSS = """
+    SessionDetail {
+        align: center middle;
+    }
+    #detail-box {
+        width: 70;
+        height: auto;
+        max-height: 90%;
+        border: solid $secondary;
+        background: $surface;
+        padding: 1 2;
+    }
+    #detail-title {
+        text-style: bold;
+        color: $accent;
+        margin-bottom: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close"),
+    ]
+
+    def __init__(self, session: SessionData):
+        super().__init__()
+        self.session = session
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(id="detail-box")
+
+    def on_mount(self) -> None:
+        s = self.session
+        box = self.query_one("#detail-box", Vertical)
+
+        agent_color = "cyan" if s.agent == "pi" else "magenta"
+        title = s.title or s.cwd or s.session_id[:16]
+
+        lines = [
+            f"[bold {agent_color}]{s.agent}[/]  {title}",
+            "",
+            f"[dim]Model:[/]      {(s.model or '—')}",
+            f"[dim]Cost:[/]       ${s.total_cost:,.4f}",
+            f"[dim]Tokens:[/]     {s.total_tokens:,}",
+            f"[dim]Rate:[/]       ${s.cost_per_hour:,.2f}/hr",
+        ]
+        if s.created_at:
+            lines.append(f"[dim]Started:[/]    {s.created_at.strftime('%Y-%m-%d %H:%M')}")
+        if s.last_activity_at:
+            delta = datetime.now(timezone.utc) - s.last_activity_at
+            ago = f"{delta.total_seconds() / 3600:.1f}h ago" if delta.total_seconds() > 3600 else f"{delta.total_seconds() / 60:.0f}m ago"
+            lines.append(f"[dim]Last active:[/] {s.last_activity_at.strftime('%Y-%m-%d %H:%M')} ({ago})")
+        if s.cwd:
+            lines.append(f"[dim]CWD:[/]        {s.cwd}")
+        if s.source_path:
+            lines.append(f"[dim]File:[/]       {s.source_path}")
+        lines.append("")
+        lines.append("[dim]esc[/] close")
+
+        for line in lines:
+            box.mount(Label(line))
+
+    def action_dismiss(self) -> None:
+        self.dismiss()
+
+
 class BudgetDashboard(App):
     """Htop-style budget dashboard for pi & Claude Code."""
 
@@ -568,8 +735,9 @@ class BudgetDashboard(App):
     BudgetBar       { height: 1; margin: 0 1; }
     AgentSummary    { height: 1; margin: 0 1; }
     RefreshStatus   { height: 1; margin: 0 1; }
-    #cost-table     { height: 1fr; margin: 0 1; }
-    #active-table   { height: auto; max-height: 12; margin: 0 1 1 1; }
+    Sparkline       { height: 1; margin: 0 1; }
+    #main-table     { height: 1fr; margin: 0 1; }
+    #secondary-table { height: auto; max-height: 12; margin: 0 1 1 1; }
     #totals         { height: 1; margin: 0 1; }
     DataTable       { border: solid $primary-background; }
     .section-label  { height: 1; margin: 1 1 0 1; text-style: bold; color: $secondary; }
@@ -578,6 +746,8 @@ class BudgetDashboard(App):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Force refresh"),
+        Binding("tab", "toggle_view", "Toggle view"),
+        Binding("enter", "inspect_session", "Inspect"),
         Binding("s", "toggle_sort", "Reverse sort"),
         Binding("1", "sort_cost", "Sort by cost"),
         Binding("2", "sort_tokens", "Sort by tokens"),
@@ -586,26 +756,31 @@ class BudgetDashboard(App):
 
     sort_key: str = "cost"
     sort_reverse: bool = True
+    show_fastest: bool = True  # default: fastest growing view
     sessions: list[SessionData] = []
     active_sessions: list[SessionData] = []
     _cache: SessionCache | None = None
+    _history: deque[float] = deque(maxlen=60)
+    _main_rows: list[SessionData] = []  # for cursor→session lookup
 
     def __init__(self, config_path: str | None = None):
         super().__init__()
         self.config = load_config(config_path)
         self.refresh_interval = self.config.get("refresh_interval_seconds", 60)
         self._cache = SessionCache(max_workers=8)
+        self._history = deque(maxlen=60)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield BudgetBar()
         yield AgentSummary()
         yield RefreshStatus()
-        yield Label("  Top Sessions", classes="section-label")
-        yield DataTable(id="cost-table")
+        yield Sparkline()
+        yield Label("  Fastest Growing", id="main-label", classes="section-label")
+        yield DataTable(id="main-table")
         yield Label("", id="totals")
-        yield Label("  Fastest Growing", classes="section-label")
-        yield DataTable(id="active-table")
+        yield Label("  Top Sessions", id="secondary-label", classes="section-label")
+        yield DataTable(id="secondary-table")
         yield Static("", id="status-line")
         yield Footer()
 
@@ -633,6 +808,10 @@ class BudgetDashboard(App):
             if s.last_activity_at and (now - s.last_activity_at) < timedelta(hours=2)
         ]
 
+        # Record total spend for sparkline
+        total_spent = sum(s.total_cost for s in self.sessions)
+        self._history.append(total_spent)
+
     def _sorted(self) -> list[SessionData]:
         key_map = {
             "cost": lambda s: s.total_cost,
@@ -643,22 +822,26 @@ class BudgetDashboard(App):
                       reverse=self.sort_reverse)
 
     def update_display(self) -> None:
-        # Refresh status
+        budget_amount = self.config.get("budget", {}).get("amount", 100.0)
+        total_spent = sum(s.total_cost for s in self.sessions)
+
+        # ── Sparkline ────────────────────────────────────────────────────
+        spark = self.query_one(Sparkline)
+        spark.points = list(self._history)
+
+        # ── Refresh status ───────────────────────────────────────────────
         rs = self.query_one(RefreshStatus)
         rs.last_refresh = self.last_collect
         rs.interval = self.refresh_interval
         rs.files_scanned = getattr(self, "_last_scanned", 0)
         rs.files_parsed = getattr(self, "_last_parsed", 0)
 
-        budget_amount = self.config.get("budget", {}).get("amount", 100.0)
-        total_spent = sum(s.total_cost for s in self.sessions)
-
-        # Budget bar
+        # ── Budget bar ───────────────────────────────────────────────────
         bb = self.query_one(BudgetBar)
         bb.spent = total_spent
         bb.budget = budget_amount
 
-        # Agent summary
+        # ── Agent summary ────────────────────────────────────────────────
         pi_cost = sum(s.total_cost for s in self.sessions if s.agent == "pi")
         pi_cnt = sum(1 for s in self.sessions if s.agent == "pi")
         cc_cost = sum(s.total_cost for s in self.sessions if s.agent == "claude-code")
@@ -669,28 +852,110 @@ class BudgetDashboard(App):
         ag.claude_cost = cc_cost
         ag.claude_sessions = cc_cnt
 
-        # Top sessions table
-        table = self.query_one("#cost-table", DataTable)
-        table.clear(columns=True)
-        table.add_columns("Agent", "Session / Title", "Model", "Cost", "Tokens", "Workspace")
+        # ── Main table & Secondary table (swap based on view) ─────────────
+        if self.show_fastest:
+            main_label, secondary_label = "Fastest Growing", "Top Sessions"
+            main_data = sorted(self.active_sessions, key=lambda x: -x.cost_per_hour)[:10]
+            main_cols = ("Agent", "Session / Title", "Cost", "Rate/hr", "Last Activity")
+            secondary_data = self._sorted()
+            secondary_cols = ("Agent", "Session / Title", "Model", "Cost", "Tokens", "Workspace")
+        else:
+            main_label, secondary_label = "Top Sessions", "Fastest Growing"
+            main_data = self._sorted()
+            main_cols = ("Agent", "Session / Title", "Model", "Cost", "Tokens", "Workspace")
+            secondary_data = sorted(self.active_sessions, key=lambda x: -x.cost_per_hour)[:10]
+            secondary_cols = ("Agent", "Session / Title", "Cost", "Rate/hr", "Last Activity")
+
+        self.query_one("#main-label", Label).update(f"  {main_label}")
+        self.query_one("#secondary-label", Label).update(f"  {secondary_label}")
+
+        # ── Populate main table ──────────────────────────────────────────
+        main_table = self.query_one("#main-table", DataTable)
+        main_table.clear(columns=True)
+        main_table.add_columns(*main_cols)
+        main_table.cursor_type = "row"
 
         top_n = self.config.get("display", {}).get("top_sessions_count", 20)
-        for s in self._sorted()[:top_n]:
-            agent = "[bold cyan]π[/]" if s.agent == "pi" else "[bold magenta]C[/]"
-            title = (s.title or s.cwd or s.session_id[:12])[:50]
-            model = (s.model or "—")[:30]
-            ws = (s.workspace or "—")[:35]
+        self._main_rows = list(main_data[:top_n]) if not self.show_fastest else list(main_data[:10])
 
-            if s.total_cost > 5:
-                cost_s = f"[bold red]${s.total_cost:,.2f}[/]"
-            elif s.total_cost > 1:
-                cost_s = f"[bold yellow]${s.total_cost:,.2f}[/]"
-            else:
-                cost_s = f"[green]${s.total_cost:,.2f}[/]"
+        if self.show_fastest:
+            for s in main_data:
+                agent = "[bold cyan]π[/]" if s.agent == "pi" else "[bold magenta]C[/]"
+                title = (s.title or s.cwd or s.session_id[:12])[:45]
+                rate = s.cost_per_hour
+                if rate > 5:
+                    rate_s = f"[bold red]${rate:,.2f}/hr[/]"
+                elif rate > 1:
+                    rate_s = f"[bold yellow]${rate:,.2f}/hr[/]"
+                else:
+                    rate_s = f"${rate:,.2f}/hr"
+                ago = ""
+                if s.last_activity_at:
+                    delta = datetime.now(timezone.utc) - s.last_activity_at
+                    secs = delta.total_seconds()
+                    if secs < 60:
+                        ago = f"[green]{secs:.0f}s ago[/]"
+                    elif secs < 3600:
+                        ago = f"[yellow]{secs / 60:.0f}m ago[/]"
+                    else:
+                        ago = f"[dim]{secs / 3600:.1f}h ago[/]"
+                main_table.add_row(agent, title, f"${s.total_cost:,.2f}", rate_s, ago)
+        else:
+            for s in main_data[:top_n]:
+                agent = "[bold cyan]π[/]" if s.agent == "pi" else "[bold magenta]C[/]"
+                title = (s.title or s.cwd or s.session_id[:12])[:50]
+                model = (s.model or "—")[:30]
+                ws = (s.workspace or "—")[:35]
+                if s.total_cost > 5:
+                    cost_s = f"[bold red]${s.total_cost:,.2f}[/]"
+                elif s.total_cost > 1:
+                    cost_s = f"[bold yellow]${s.total_cost:,.2f}[/]"
+                else:
+                    cost_s = f"[green]${s.total_cost:,.2f}[/]"
+                main_table.add_row(agent, title, model, cost_s, f"{s.total_tokens:,}", ws)
 
-            table.add_row(agent, title, model, cost_s, f"{s.total_tokens:,}", ws)
+        # ── Populate secondary table ─────────────────────────────────────
+        sec_table = self.query_one("#secondary-table", DataTable)
+        sec_table.clear(columns=True)
+        sec_table.add_columns(*secondary_cols)
 
-        # Totals
+        if self.show_fastest:
+            for s in secondary_data[:top_n]:
+                agent = "[bold cyan]π[/]" if s.agent == "pi" else "[bold magenta]C[/]"
+                title = (s.title or s.cwd or s.session_id[:12])[:50]
+                model = (s.model or "—")[:30]
+                ws = (s.workspace or "—")[:35]
+                if s.total_cost > 5:
+                    cost_s = f"[bold red]${s.total_cost:,.2f}[/]"
+                elif s.total_cost > 1:
+                    cost_s = f"[bold yellow]${s.total_cost:,.2f}[/]"
+                else:
+                    cost_s = f"[green]${s.total_cost:,.2f}[/]"
+                sec_table.add_row(agent, title, model, cost_s, f"{s.total_tokens:,}", ws)
+        else:
+            for s in secondary_data:
+                agent = "[bold cyan]π[/]" if s.agent == "pi" else "[bold magenta]C[/]"
+                title = (s.title or s.cwd or s.session_id[:12])[:45]
+                rate = s.cost_per_hour
+                if rate > 5:
+                    rate_s = f"[bold red]${rate:,.2f}/hr[/]"
+                elif rate > 1:
+                    rate_s = f"[bold yellow]${rate:,.2f}/hr[/]"
+                else:
+                    rate_s = f"${rate:,.2f}/hr"
+                ago = ""
+                if s.last_activity_at:
+                    delta = datetime.now(timezone.utc) - s.last_activity_at
+                    secs = delta.total_seconds()
+                    if secs < 60:
+                        ago = f"[green]{secs:.0f}s ago[/]"
+                    elif secs < 3600:
+                        ago = f"[yellow]{secs / 60:.0f}m ago[/]"
+                    else:
+                        ago = f"[dim]{secs / 3600:.1f}h ago[/]"
+                sec_table.add_row(agent, title, f"${s.total_cost:,.2f}", rate_s, ago)
+
+        # ── Totals ───────────────────────────────────────────────────────
         total_tokens = sum(s.total_tokens for s in self.sessions)
         self.query_one("#totals", Label).update(
             f"  [dim]{len(self.sessions)} sessions · "
@@ -698,48 +963,39 @@ class BudgetDashboard(App):
             f"{total_tokens:,} tokens[/]"
         )
 
-        # Active / growing sessions
-        at = self.query_one("#active-table", DataTable)
-        at.clear(columns=True)
-        at.add_columns("Agent", "Session / Title", "Cost", "Rate/hr", "Last Activity")
-
-        for s in sorted(self.active_sessions, key=lambda x: -x.cost_per_hour)[:10]:
-            agent = "[bold cyan]π[/]" if s.agent == "pi" else "[bold magenta]C[/]"
-            title = (s.title or s.cwd or s.session_id[:12])[:45]
-
-            rate = s.cost_per_hour
-            if rate > 5:
-                rate_s = f"[bold red]${rate:,.2f}/hr[/]"
-            elif rate > 1:
-                rate_s = f"[bold yellow]${rate:,.2f}/hr[/]"
-            else:
-                rate_s = f"${rate:,.2f}/hr"
-
-            ago = ""
-            if s.last_activity_at:
-                delta = datetime.now(timezone.utc) - s.last_activity_at
-                secs = delta.total_seconds()
-                if secs < 60:
-                    ago = f"[green]{secs:.0f}s ago[/]"
-                elif secs < 3600:
-                    ago = f"[yellow]{secs / 60:.0f}m ago[/]"
-                else:
-                    ago = f"[dim]{secs / 3600:.1f}h ago[/]"
-
-            at.add_row(agent, title, f"${s.total_cost:,.2f}", rate_s, ago)
-
-        # Status line
+        # ── Status line ──────────────────────────────────────────────────
         reset_type = self.config.get("budget", {}).get("reset", "monthly")
         window_days = self.config.get("window", {}).get("days", 30)
+        window_type = self.config.get("window", {}).get("type", "rolling")
+        reset_label = reset_type
+        if reset_type == "weekly":
+            day = self.config.get("window", {}).get("reset_day", "monday")
+            reset_label = f"weekly ({day})"
+        view_label = "fastest" if self.show_fastest else "top"
         self.query_one("#status-line", Static).update(
-            f" [dim]sort: {self.sort_key} (1/2/3) · "
-            f"reset: {reset_type} · window: {window_days}d · "
+            f" [dim]view: {view_label} (tab) · sort: {self.sort_key} (1/2/3) · "
+            f"reset: {reset_label} · window: {window_type} {window_days}d · "
             f"refresh: {self.refresh_interval}s[/]"
         )
 
     # ── Actions ─────────────────────────────────────────────────────────────
     def action_refresh(self) -> None:
         self.collect_data()
+        self.update_display()
+
+    def action_inspect_session(self) -> None:
+        """Open detail view for the highlighted session."""
+        try:
+            main_table = self.query_one("#main-table", DataTable)
+            row = main_table.cursor_coordinate.row
+            if 0 <= row < len(self._main_rows):
+                session = self._main_rows[row]
+                self.push_screen(SessionDetail(session))
+        except Exception:
+            pass
+
+    def action_toggle_view(self) -> None:
+        self.show_fastest = not self.show_fastest
         self.update_display()
 
     def action_toggle_sort(self) -> None:

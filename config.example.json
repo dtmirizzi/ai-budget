@@ -2,11 +2,11 @@
   "budget": {
     "amount": 100.0,
     "currency": "USD",
-    "reset": "monthly"
+    "reset": "weekly"
   },
   "window": {
-    "type": "rolling",
-    "days": 30
+    "type": "weekly",
+    "reset_day": "monday"
   },
   "paths": {
     "pi_sessions": "~/.pi/agent/sessions",
