@@ -735,7 +735,7 @@ class BudgetCap(Widget):
     budget: float = reactive(100.0)
 
     def render(self) -> str:
-        return f"[bold]cap: [/$]${self.budget:,.2f}[/]"
+        return f"[bold]cap:[/] ${self.budget:,.2f}"
 
 
 class BudgetDashboard(App):
