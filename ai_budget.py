@@ -19,6 +19,7 @@ from pathlib import Path
 
 # ── textual imports ──────────────────────────────────────────────────────────
 try:
+    from textual.app import App, ComposeResult
     from textual.screen import Screen
     from textual.binding import Binding
     from textual.reactive import reactive
