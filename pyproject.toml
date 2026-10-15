@@ -1,0 +1,16 @@
+[project]
+name = "ai-budget"
+version = "1.0.0"
+description = "A beautiful htop-style terminal dashboard for tracking Claude & Pi API budgets"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=1.0.0",
+]
+
+[project.scripts]
+ai-budget = "ai_budget:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

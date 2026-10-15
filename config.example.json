@@ -1,0 +1,20 @@
+{
+  "budget": {
+    "amount": 100.0,
+    "currency": "USD",
+    "reset": "monthly"
+  },
+  "window": {
+    "type": "rolling",
+    "days": 30
+  },
+  "paths": {
+    "pi_sessions": "~/.pi/agent/sessions",
+    "claude_code_sessions": "~/Library/Application Support/Claude/local-agent-mode-sessions",
+    "claude_code_sessions_alt": "~/Library/Application Support/Claude/claude-code-sessions"
+  },
+  "refresh_interval_seconds": 60,
+  "display": {
+    "top_sessions_count": 20
+  }
+}
