@@ -745,6 +745,7 @@ class BudgetDashboard(App):
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
+        Binding("ctrl+c", "quit", "Quit"),
         Binding("r", "refresh", "Force refresh"),
         Binding("tab", "toggle_view", "Toggle view"),
         Binding("enter", "inspect_session", "Inspect"),
