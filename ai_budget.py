@@ -234,7 +234,7 @@ def _extract_claude(entries: list[dict], meta: dict, source_path: str = "", is_s
             session_id = sid
             break
 
-    display_title = title or cwd or session_id
+    display_title = title or session_id
     if is_sub and not title and entries:
         pass  # keep display_title
 
@@ -699,7 +699,7 @@ class SessionDetail(Screen):
         box = self.query_one("#detail-box", Vertical)
 
         agent_color = "cyan" if s.agent == "pi" else "magenta"
-        title = s.title or s.cwd or s.session_id[:16]
+        title = s.title or s.session_id[:16]
 
         lines = [
             f"[bold {agent_color}]{s.agent}[/]  {title}",
@@ -883,7 +883,7 @@ class BudgetDashboard(App):
         if self.show_fastest:
             for s in main_data:
                 agent = "[bold cyan]π[/]" if s.agent == "pi" else "[bold magenta]C[/]"
-                title = (s.title or s.cwd or s.session_id[:12])[:45]
+                title = (s.title or s.session_id[:12])[:45]
                 rate = s.cost_per_hour
                 if rate > 5:
                     rate_s = f"[bold red]${rate:,.2f}/hr[/]"
@@ -905,7 +905,7 @@ class BudgetDashboard(App):
         else:
             for s in main_data[:top_n]:
                 agent = "[bold cyan]π[/]" if s.agent == "pi" else "[bold magenta]C[/]"
-                title = (s.title or s.cwd or s.session_id[:12])[:50]
+                title = (s.title or s.session_id[:12])[:50]
                 model = (s.model or "—")[:30]
                 ws = (s.workspace or "—")[:35]
                 if s.total_cost > 5:
@@ -924,7 +924,7 @@ class BudgetDashboard(App):
         if self.show_fastest:
             for s in secondary_data[:top_n]:
                 agent = "[bold cyan]π[/]" if s.agent == "pi" else "[bold magenta]C[/]"
-                title = (s.title or s.cwd or s.session_id[:12])[:50]
+                title = (s.title or s.session_id[:12])[:50]
                 model = (s.model or "—")[:30]
                 ws = (s.workspace or "—")[:35]
                 if s.total_cost > 5:
@@ -937,7 +937,7 @@ class BudgetDashboard(App):
         else:
             for s in secondary_data:
                 agent = "[bold cyan]π[/]" if s.agent == "pi" else "[bold magenta]C[/]"
-                title = (s.title or s.cwd or s.session_id[:12])[:45]
+                title = (s.title or s.session_id[:12])[:45]
                 rate = s.cost_per_hour
                 if rate > 5:
                     rate_s = f"[bold red]${rate:,.2f}/hr[/]"
@@ -1041,7 +1041,7 @@ def cmd_summary(config_path: str | None = None) -> None:
     print(f"\n  Top 10 sessions by cost:")
     for s in sorted(sessions, key=lambda x: -x.total_cost)[:10]:
         agent = "π " if s.agent == "pi" else "C "
-        title = (s.title or s.cwd or s.session_id[:12])[:55]
+        title = (s.title or s.session_id[:12])[:55]
         print(f"    {agent} ${s.total_cost:>8,.2f}  {s.model:28s}  {title}")
     print()
 
