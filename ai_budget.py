@@ -574,18 +574,14 @@ class BudgetBar(Widget):
 
     def render(self) -> str:
         ratio = min(self.spent / self.budget, 1.0) if self.budget > 0 else 1.0
-        width = max(self.size.width - 22, 10)
-        filled = int(ratio * width)
-        rest = width - filled
+        bar_width = max(self.size.width - 30, 8)
+        filled = int(ratio * bar_width)
 
-        # Build filled portion character-by-character with gradient
         bar = ""
         for i in range(filled):
-            t = i / width if width > 0 else 0
-            color = self._interp_color(t)
-            bar += f"[{color}]█[/]"
-        # Empty zone — dim purple
-        bar += f"[#302040]{'░' * rest}[/]"
+            t = i / bar_width if bar_width > 0 else 0
+            bar += f"[{self._interp_color(t)}]█[/]"
+        bar += f"[#302040]{'░' * (bar_width - filled)}[/]"
 
         spent_color = self._interp_color(ratio)
         return (
@@ -729,20 +725,10 @@ class SessionDetail(Screen):
         self.dismiss()
 
 
-class BudgetCap(Widget):
-    """Top-right budget cap indicator: [$100.00]"""
-
-    budget: float = reactive(100.0)
-
-    def render(self) -> str:
-        return f"[bold]cap:[/] ${self.budget:,.2f}"
-
-
 class BudgetDashboard(App):
     """Htop-style budget dashboard for pi & Claude Code."""
 
     CSS = """
-    BudgetCap       { dock: top; height: 1; content-align: right middle; margin: 0 2 0 0; }
     BudgetBar       { height: 1; margin: 0 1; }
     AgentSummary    { height: 1; margin: 0 1; }
     RefreshStatus   { height: 1; margin: 0 1; }
@@ -853,9 +839,6 @@ class BudgetDashboard(App):
         bb = self.query_one(BudgetBar)
         bb.spent = total_spent
         bb.budget = budget_amount
-
-        # Budget cap (top-right)
-        self.query_one(BudgetCap).budget = budget_amount
 
         # ── Agent summary ────────────────────────────────────────────────
         pi_cost = sum(s.total_cost for s in self.sessions if s.agent == "pi")
